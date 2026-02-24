@@ -1,0 +1,120 @@
+/* ============================================
+   Subtitle to Gemini – Floating Button Styles
+   ============================================ */
+
+#stg-fab-container {
+    position: fixed;
+    right: 20px;
+    bottom: 80px;
+    z-index: 99999;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+/* ---- Main FAB Button ---- */
+#stg-fab-btn {
+    width: 52px;
+    height: 52px;
+    border-radius: 16px;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #4285f4 0%, #8b5cf6 100%);
+    box-shadow: 0 4px 20px rgba(66, 133, 244, 0.35),
+        0 1px 4px rgba(0, 0, 0, 0.12);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    position: relative;
+    overflow: hidden;
+}
+
+#stg-fab-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 16px;
+    background: linear-gradient(135deg,
+            rgba(255, 255, 255, 0.18) 0%,
+            rgba(255, 255, 255, 0) 60%);
+    pointer-events: none;
+}
+
+#stg-fab-btn:hover {
+    transform: translateY(-2px) scale(1.06);
+    box-shadow: 0 8px 28px rgba(66, 133, 244, 0.45),
+        0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+#stg-fab-btn:active {
+    transform: translateY(0) scale(0.97);
+    box-shadow: 0 2px 10px rgba(66, 133, 244, 0.3);
+}
+
+#stg-fab-btn svg {
+    width: 26px;
+    height: 26px;
+    fill: #fff;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+    transition: transform 0.2s ease;
+}
+
+#stg-fab-btn:hover svg {
+    transform: scale(1.08);
+}
+
+/* ---- Loading spinner state ---- */
+#stg-fab-btn.stg-loading svg {
+    animation: stg-spin 1s linear infinite;
+}
+
+@keyframes stg-spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ---- Toast notification ---- */
+#stg-toast {
+    max-width: 280px;
+    padding: 10px 16px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #fff;
+    background: rgba(30, 30, 36, 0.88);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    transform: translateX(16px);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: none;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#stg-toast.stg-show {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+#stg-toast.stg-success {
+    border-left: 3px solid #34d399;
+}
+
+#stg-toast.stg-error {
+    border-left: 3px solid #f87171;
+}
+
+#stg-toast.stg-info {
+    border-left: 3px solid #60a5fa;
+}
