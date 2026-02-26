@@ -243,78 +243,39 @@
 
     // ========== Bilibili Subtitle Extraction ==========
     async function getBilibiliSubtitle() {
-        let bvid = null;
-        let cid = null;
-        let title = 'BV视频';
+        // 始终从当前 URL 提取 BV 号（最可靠的方式）
+        // 注意：不要使用 __INITIAL_STATE__ 或 window.bvid，它们在 SPA 导航时不会更新！
+        const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
+        if (!bvidMatch) {
+            throw new Error('无法从当前页面 URL 提取 BV 号');
+        }
+        const bvid = bvidMatch[1];
+        console.log('[Subtitle-to-Gemini] 从 URL 提取 BV号:', bvid, '当前URL:', location.href);
 
-        console.log('[Subtitle-to-Gemini] 尝试从页面变量读取当前视频信息...');
-
-        // 尝试方法1: 直接读取全局变量 window.bvid 和 window.cid
-        // B站的新版 SPA 框架在单页导航时会实时更新这些变量
-        bvid = getPageVariable('bvid');
-        cid = getPageVariable('cid');
-
-        // 尝试方法2: 从 __INITIAL_STATE__ 获取 (更全面)
-        if (!bvid || !cid) {
-            const initState = getPageVariable('__INITIAL_STATE__');
-            if (initState) {
-                bvid = bvid || initState.bvid;
-                title = initState.videoData?.title || title;
-
-                // 处理分P
-                if (!cid) {
-                    const pages = initState.videoData?.pages;
-                    const p = initState.p || 1;
-                    if (pages && pages.length > 0) {
-                        const pageInfo = pages.find(page => page.page === p);
-                        if (pageInfo) {
-                            cid = pageInfo.cid;
-                        } else {
-                            cid = pages[0].cid;
-                        }
-                    } else {
-                        cid = initState.videoData?.cid;
-                    }
-                }
-            }
+        // Step 1: 从 API 获取视频信息（cid 和标题）
+        const infoJson = await safeFetchJSON(
+            `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+            { credentials: 'include' }
+        );
+        if (infoJson.code !== 0) {
+            throw new Error(`获取视频信息失败: ${infoJson.message}`);
         }
 
-        // 尝试方法3 (Fallback): 退回到从 URL 提取并请求 API
-        if (!bvid) {
-            console.warn('[Subtitle-to-Gemini] 页面变量读取失败，回退到从 URL 分析');
-            const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
-            if (!bvidMatch) {
-                throw new Error('无法从当前页面提取到视频 BV 号');
+        // 处理分P视频
+        let cid = infoJson.data.cid;
+        const pages = infoJson.data.pages;
+        if (pages && pages.length > 0) {
+            const urlParams = new URLSearchParams(location.search);
+            const p = parseInt(urlParams.get('p')) || 1;
+            const pageInfo = pages.find(page => page.page === p);
+            if (pageInfo) {
+                cid = pageInfo.cid;
             }
-            bvid = bvidMatch[1];
         }
+        const title = infoJson.data.title;
+        console.log(`[Subtitle-to-Gemini] 视频确认 - 标题: 「${title}」, bvid: ${bvid}, cid: ${cid}`);
 
-        if (!cid) {
-            console.log('[Subtitle-to-Gemini] 缺少 cid，从 API 补充获取信息...');
-            const infoJson = await safeFetchJSON(
-                `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
-                { credentials: 'include' }
-            );
-            if (infoJson.code !== 0) {
-                throw new Error(`获取视频信息失败: ${infoJson.message}`);
-            }
-
-            cid = infoJson.data.cid;
-            const pages = infoJson.data.pages;
-            if (pages && pages.length > 0) {
-                const urlParams = new URLSearchParams(location.search);
-                const p = parseInt(urlParams.get('p')) || 1;
-                const pageInfo = pages.find(page => page.page === p);
-                if (pageInfo) {
-                    cid = pageInfo.cid;
-                }
-            }
-            title = infoJson.data.title;
-        }
-
-        console.log(`[Subtitle-to-Gemini] 视频解析成功 - 标题: ${title}, bvid: ${bvid}, cid: ${cid}`);
-
-        // Step 2: Get subtitle list from player API
+        // Step 2: 获取字幕列表
         const playerJson = await safeFetchJSON(
             `https://api.bilibili.com/x/player/v2?bvid=${bvid}&cid=${cid}`,
             { credentials: 'include' }
@@ -327,9 +288,11 @@
             throw new Error('该视频没有可用字幕（可能需要登录B站账号）');
         }
 
-        // Step 3: Pick best subtitle and download
+        // Step 3: 下载字幕
         const sub = pickSubtitle(subtitles);
-        return await downloadBiliSubtitle(sub);
+        const result = await downloadBiliSubtitle(sub);
+        result.title = title; // 附带标题供验证
+        return result;
     }
 
     // ========== Main Action ==========
@@ -361,6 +324,8 @@
                 showToast('🔍 正在获取字幕…', 'info');
                 const result = await getBilibiliSubtitle();
                 prompt = result.text + '\n\n总结视频内容';
+                // 在 toast 中显示视频标题，方便用户确认是否正确
+                showToast(`✅ 「${result.title || ''}」字幕已获取`, 'success', 2000);
             }
 
             // Write to clipboard DIRECTLY (most robust cross-browser way)
