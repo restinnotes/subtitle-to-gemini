@@ -19,17 +19,19 @@
 ### Installation
 Currently, the extension is not published to the web stores. You can install it manually:
 
-#### Chrome / Edge
+#### Chrome / Edge (use source folder)
 1. Download or clone this repository.
 2. Open your browser and go to `chrome://extensions/` (or `edge://extensions/`).
 3. Toggle **Developer mode** on (top right corner).
 4. Click **Load unpacked** and select the `subtitle-to-gemini` folder.
+5. To update: after pulling latest code, click the **refresh** icon on the extension card.
 
-#### Firefox
-1. Download or clone this repository.
-2. Open Firefox and go to `about:debugging#/runtime/this-firefox`.
-3. Click **Load Temporary Add-on...**
-4. Select the `manifest.json` file inside the `subtitle-to-gemini` folder.
+#### Firefox (use .zip from Releases)
+1. Go to the [Releases page](https://github.com/restinnotes/subtitle-to-gemini/releases) and download the latest `.zip` file.
+2. Open Firefox and go to `about:addons` → ⚙️ gear icon → **Install Add-on From File...**
+3. Select the downloaded `.zip` file.
+
+> **Note**: You can also load temporarily via `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on...** → select `manifest.json`, but this will be removed when Firefox restarts.
 
 ### Usage
 1. Open any YouTube (`youtube.com/watch*`) or Bilibili (`bilibili.com/video/*`) video.
@@ -52,19 +54,21 @@ Currently, the extension is not published to the web stores. You can install it 
 🤖 **Gemini 自动粘贴**：自动在新标签页打开 Gemini 并尝试为你自动填写和提交！
 
 ### 安装指南
-本插件目前尚未上架扩展商店，请通过开发者模式本地安装：
+本插件目前尚未上架扩展商店，请通过以下方式本地安装：
 
-#### Chrome / Edge 浏览器
+#### Chrome / Edge 浏览器（使用源码文件夹）
 1. 下载或克隆本仓库代码。
 2. 在浏览器地址栏输入 `chrome://extensions/`（或 `edge://extensions/`）。
 3. 打开右上角的 **开发者模式**。
 4. 点击左上角的 **加载已解压的扩展程序**，选择 `subtitle-to-gemini` 文件夹。
+5. 更新方法：拉取最新代码后，在扩展卡片上点击 **刷新** 图标即可。
 
-#### Firefox 原狐浏览器
-1. 下载或克隆本仓库代码。
-2. 在浏览器地址栏输入 `about:debugging#/runtime/this-firefox`。
-3. 点击 **临时载入附加组件...**。
-4. 选择 `subtitle-to-gemini` 文件夹中的 `manifest.json` 文件即可。
+#### Firefox 浏览器（使用 Release 的 .zip 包）
+1. 前往 [Releases 页面](https://github.com/restinnotes/subtitle-to-gemini/releases) 下载最新的 `.zip` 文件。
+2. 打开 Firefox，进入 `about:addons` → 点击 ⚙️ 齿轮图标 → **从文件安装附加组件...**。
+3. 选择下载好的 `.zip` 文件即可。
+
+> **提示**：也可以通过 `about:debugging#/runtime/this-firefox` → **临时载入附加组件...** → 选择 `manifest.json`，但此方式在 Firefox 重启后会失效。
 
 ### 使用方法
 1. 打开任意 YouTube (`youtube.com/watch*`) 或 Bilibili (`bilibili.com/video/*`) 视频页面。
