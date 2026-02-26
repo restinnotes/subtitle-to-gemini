@@ -52,14 +52,24 @@
     }
 
     // ========== YouTube Subtitle Extraction ==========
+    // Access page-context variables via Firefox's wrappedJSObject (AMO-safe)
+    function getPageVariable(varName) {
+        try {
+            const val = window.wrappedJSObject[varName];
+            if (!val) return null;
+            // cloneInto creates a safe structured clone from page context to content script
+            return cloneInto(JSON.parse(JSON.stringify(val)), window);
+        } catch (_) {
+            return null;
+        }
+    }
+
     async function getYouTubeSubtitle() {
         // Try to find caption tracks from player response embedded in page
         let playerResponse = null;
 
-        // Method 1: ytInitialPlayerResponse global
-        try {
-            playerResponse = unsafeEval('ytInitialPlayerResponse');
-        } catch (_) { }
+        // Method 1: wrappedJSObject access to ytInitialPlayerResponse
+        playerResponse = getPageVariable('ytInitialPlayerResponse');
 
         // Method 2: scan scripts for ytInitialPlayerResponse
         if (!playerResponse) {
@@ -93,10 +103,13 @@
         if (!playerResponse) {
             try {
                 const ytpEl = document.querySelector('ytd-watch-flexy');
-                if (ytpEl && ytpEl.__data) {
-                    playerResponse =
-                        ytpEl.__data?.playerData?.playerResponse ||
-                        ytpEl.__data?.response?.playerResponse;
+                if (ytpEl && ytpEl.wrappedJSObject?.__data) {
+                    const data = ytpEl.wrappedJSObject.__data;
+                    const raw = data?.playerData?.playerResponse ||
+                        data?.response?.playerResponse;
+                    if (raw) {
+                        playerResponse = JSON.parse(JSON.stringify(raw));
+                    }
                 }
             } catch (_) { }
         }
@@ -154,8 +167,10 @@
         } else {
             subtitleUrl = subtitleUrl.replace(/fmt=\w+/, 'fmt=json3');
         }
+        // 防止浏览器缓存前一个视频的字幕
+        subtitleUrl += '&_t=' + Date.now();
 
-        const resp = await fetch(subtitleUrl);
+        const resp = await fetch(subtitleUrl, { cache: 'no-store' });
         const json = await resp.json();
 
         const events = json.events || [];
@@ -176,56 +191,20 @@
         return { text: lines.join('\n'), lang };
     }
 
-    // Safely try to access global variables from page context
-    // Uses a targeted extraction expression to avoid serializing huge objects
-    function unsafeEval(expression) {
-        return new Promise((resolve, reject) => {
-            const id = '__stg_bridge_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-            const handler = (e) => {
-                document.removeEventListener(id, handler);
-                if (e.detail && e.detail !== 'null' && e.detail !== 'undefined') {
-                    try {
-                        resolve(JSON.parse(e.detail));
-                    } catch (_) {
-                        reject(new Error('parse failed'));
-                    }
-                } else {
-                    reject(new Error('not found'));
-                }
-            };
-            document.addEventListener(id, handler);
-
-            const script = document.createElement('script');
-            script.textContent = `
-        (function() {
-          try {
-            var _val = ${expression};
-            var _str = JSON.stringify(_val, function(key, value) {
-              if (typeof value === 'object' && value !== null) {
-                // Avoid circular references by tracking depth
-                try { JSON.stringify(value); } catch(e) { return '[Circular]'; }
-              }
-              return value;
-            });
-            document.dispatchEvent(new CustomEvent('${id}', { detail: _str }));
-          } catch(e) {
-            document.dispatchEvent(new CustomEvent('${id}', { detail: null }));
-          }
-        })();
-      `;
-            (document.head || document.documentElement).appendChild(script);
-            script.remove();
-
-            setTimeout(() => {
-                document.removeEventListener(id, handler);
-                reject(new Error('timeout'));
-            }, 2000);
-        });
-    }
-
     // Helper: safely fetch JSON with validation
     async function safeFetchJSON(url, options = {}) {
-        const resp = await fetch(url, options);
+        // 强制不使用缓存
+        const finalOptions = { ...options, cache: 'no-store' };
+
+        let targetUrl = url;
+        try {
+            // 给 API URL 加上时间戳防缓存
+            const urlObj = new URL(url, url.startsWith('http') ? undefined : location.origin);
+            urlObj.searchParams.set('_t', Date.now().toString());
+            targetUrl = urlObj.toString();
+        } catch (_) { }
+
+        const resp = await fetch(targetUrl, finalOptions);
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         }
@@ -233,8 +212,10 @@
         try {
             return JSON.parse(text);
         } catch (e) {
-            console.error('[Subtitle-to-Gemini] JSON parse failed for', url, 'response:', text.slice(0, 200));
-            throw new Error(`返回内容不是有效 JSON (${url.split('/').pop().split('?')[0]})`);
+            console.error('[Subtitle-to-Gemini] JSON parse failed for', targetUrl, 'response:', text.slice(0, 200));
+            // 如果返回了非JSON的内容（如拦截页面/报错HTML），提供内容预览以供排错
+            const preview = text.trim() ? text.slice(0, 50).replace(/\n|\r/g, ' ') : '<空响应>';
+            throw new Error(`返回内容不是有效 JSON (响应预览: ${preview}...)`);
         }
     }
 
@@ -262,26 +243,76 @@
 
     // ========== Bilibili Subtitle Extraction ==========
     async function getBilibiliSubtitle() {
-        // Always read BV id from the CURRENT URL (not cached state)
-        const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
-        if (!bvidMatch) {
-            throw new Error('无法从 URL 提取 BV 号');
-        }
-        const bvid = bvidMatch[1];
-        console.log('[Subtitle-to-Gemini] 当前视频 BV号:', bvid);
+        let bvid = null;
+        let cid = null;
+        let title = 'BV视频';
 
-        // Step 1: Get video info (cid) from API — always fresh
-        console.log('[Subtitle-to-Gemini] 正在从 API 获取视频信息...');
-        const infoJson = await safeFetchJSON(
-            `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
-            { credentials: 'include' }
-        );
-        if (infoJson.code !== 0) {
-            throw new Error(`获取视频信息失败: ${infoJson.message}`);
+        console.log('[Subtitle-to-Gemini] 尝试从页面变量读取当前视频信息...');
+
+        // 尝试方法1: 直接读取全局变量 window.bvid 和 window.cid
+        // B站的新版 SPA 框架在单页导航时会实时更新这些变量
+        bvid = getPageVariable('bvid');
+        cid = getPageVariable('cid');
+
+        // 尝试方法2: 从 __INITIAL_STATE__ 获取 (更全面)
+        if (!bvid || !cid) {
+            const initState = getPageVariable('__INITIAL_STATE__');
+            if (initState) {
+                bvid = bvid || initState.bvid;
+                title = initState.videoData?.title || title;
+
+                // 处理分P
+                if (!cid) {
+                    const pages = initState.videoData?.pages;
+                    const p = initState.p || 1;
+                    if (pages && pages.length > 0) {
+                        const pageInfo = pages.find(page => page.page === p);
+                        if (pageInfo) {
+                            cid = pageInfo.cid;
+                        } else {
+                            cid = pages[0].cid;
+                        }
+                    } else {
+                        cid = initState.videoData?.cid;
+                    }
+                }
+            }
         }
-        const cid = infoJson.data.cid;
-        const title = infoJson.data.title;
-        console.log('[Subtitle-to-Gemini] 视频标题:', title, 'cid:', cid);
+
+        // 尝试方法3 (Fallback): 退回到从 URL 提取并请求 API
+        if (!bvid) {
+            console.warn('[Subtitle-to-Gemini] 页面变量读取失败，回退到从 URL 分析');
+            const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
+            if (!bvidMatch) {
+                throw new Error('无法从当前页面提取到视频 BV 号');
+            }
+            bvid = bvidMatch[1];
+        }
+
+        if (!cid) {
+            console.log('[Subtitle-to-Gemini] 缺少 cid，从 API 补充获取信息...');
+            const infoJson = await safeFetchJSON(
+                `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+                { credentials: 'include' }
+            );
+            if (infoJson.code !== 0) {
+                throw new Error(`获取视频信息失败: ${infoJson.message}`);
+            }
+
+            cid = infoJson.data.cid;
+            const pages = infoJson.data.pages;
+            if (pages && pages.length > 0) {
+                const urlParams = new URLSearchParams(location.search);
+                const p = parseInt(urlParams.get('p')) || 1;
+                const pageInfo = pages.find(page => page.page === p);
+                if (pageInfo) {
+                    cid = pageInfo.cid;
+                }
+            }
+            title = infoJson.data.title;
+        }
+
+        console.log(`[Subtitle-to-Gemini] 视频解析成功 - 标题: ${title}, bvid: ${bvid}, cid: ${cid}`);
 
         // Step 2: Get subtitle list from player API
         const playerJson = await safeFetchJSON(
@@ -318,8 +349,14 @@
         try {
             let prompt;
             if (PLATFORM === 'youtube') {
-                showToast('🔗 正在复制链接…', 'info');
-                prompt = location.href + '\n\n总结视频内容';
+                showToast('🔍 正在获取字幕…', 'info');
+                try {
+                    const result = await getYouTubeSubtitle();
+                    prompt = result.text + '\n\n总结视频内容';
+                } catch (err) {
+                    console.warn('[Subtitle-to-Gemini] YouTube字幕获取失败，降级为纯链接:', err);
+                    prompt = location.href + '\n\n总结视频内容';
+                }
             } else {
                 showToast('🔍 正在获取字幕…', 'info');
                 const result = await getBilibiliSubtitle();
