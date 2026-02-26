@@ -167,8 +167,6 @@
         } else {
             subtitleUrl = subtitleUrl.replace(/fmt=\w+/, 'fmt=json3');
         }
-        // 防止浏览器缓存前一个视频的字幕
-        subtitleUrl += '&_t=' + Date.now();
 
         const resp = await fetch(subtitleUrl, { cache: 'no-store' });
         const json = await resp.json();
@@ -192,19 +190,11 @@
     }
 
     // Helper: safely fetch JSON with validation
-    async function safeFetchJSON(url, options = {}) {
-        // 强制不使用缓存
+    async function safeFetchJSON(url, options = {}, retryCount = 0) {
+        // 仅用 cache: 'no-store' 防缓存（不修改URL，避免与BiliPlus等插件冲突）
         const finalOptions = { ...options, cache: 'no-store' };
 
-        let targetUrl = url;
-        try {
-            // 给 API URL 加上时间戳防缓存
-            const urlObj = new URL(url, url.startsWith('http') ? undefined : location.origin);
-            urlObj.searchParams.set('_t', Date.now().toString());
-            targetUrl = urlObj.toString();
-        } catch (_) { }
-
-        const resp = await fetch(targetUrl, finalOptions);
+        const resp = await fetch(url, finalOptions);
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         }
@@ -212,8 +202,17 @@
         try {
             return JSON.parse(text);
         } catch (e) {
-            console.error('[Subtitle-to-Gemini] JSON parse failed for', targetUrl, 'response:', text.slice(0, 200));
-            // 如果返回了非JSON的内容（如拦截页面/报错HTML），提供内容预览以供排错
+            // 如果返回了HTML（如B站页面），可能是页面还没加载完或插件拦截出错
+            if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+                console.warn('[Subtitle-to-Gemini] API 返回了 HTML 而非 JSON，可能页面未就绪', url);
+                if (retryCount < 2) {
+                    // 等待后重试
+                    await new Promise(r => setTimeout(r, 1000));
+                    console.log('[Subtitle-to-Gemini] 重试第', retryCount + 1, '次:', url);
+                    return safeFetchJSON(url, options, retryCount + 1);
+                }
+            }
+            console.error('[Subtitle-to-Gemini] JSON parse failed for', url, 'response:', text.slice(0, 200));
             const preview = text.trim() ? text.slice(0, 50).replace(/\n|\r/g, ' ') : '<空响应>';
             throw new Error(`返回内容不是有效 JSON (响应预览: ${preview}...)`);
         }
