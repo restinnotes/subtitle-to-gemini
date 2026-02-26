@@ -240,10 +240,39 @@
         return { text: sentences.join('\n'), lang: sub.lan_doc || sub.lan || '未知' };
     }
 
+    // Helper: 等待 B 站视频页面完全就绪
+    function waitForBiliPageReady() {
+        return new Promise((resolve) => {
+            const MAX_WAIT = 5000;
+            const POLL = 200;
+            let waited = 0;
+
+            // 检测页面是否已就绪：视频标题 h1 出现即代表 SPA 导航完成
+            const check = () => {
+                const titleEl = document.querySelector('h1.video-title') ||
+                    document.querySelector('.video-title');
+                const video = document.querySelector('video');
+                if ((titleEl && titleEl.textContent.trim()) || (video && video.src) || waited >= MAX_WAIT) {
+                    if (waited > 0) {
+                        console.log(`[Subtitle-to-Gemini] 页面就绪，等待了 ${waited}ms`);
+                    }
+                    resolve();
+                    return;
+                }
+                waited += POLL;
+                setTimeout(check, POLL);
+            };
+            check();
+        });
+    }
+
     // ========== Bilibili Subtitle Extraction ==========
     async function getBilibiliSubtitle() {
+        // 等待 B 站视频页面完全就绪（SPA 导航 + BiliPlus 等插件初始化完成）
+        // 如果不等待，fetch 可能被拦截返回 HTML 而非 JSON
+        await waitForBiliPageReady();
+
         // 始终从当前 URL 提取 BV 号（最可靠的方式）
-        // 注意：不要使用 __INITIAL_STATE__ 或 window.bvid，它们在 SPA 导航时不会更新！
         const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
         if (!bvidMatch) {
             throw new Error('无法从当前页面 URL 提取 BV 号');
