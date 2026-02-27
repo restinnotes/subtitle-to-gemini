@@ -240,96 +240,73 @@
         return { text: sentences.join('\n'), lang: sub.lan_doc || sub.lan || '未知' };
     }
 
-    /**
-     * 在主世界 (Main World) 执行脚本获取变量，解决 Chrome Content Script 隔离限制
-     * @param {string} varName 变量名（如 'cid', 'bvid', '__INITIAL_STATE__'）
-     * @returns {Promise<any>}
-     */
-    function getVariableInMainWorld(varName) {
-        return new Promise((resolve) => {
-            const eventName = 'stg_var_' + Math.random().toString(36).slice(2);
-            const script = document.createElement('script');
-            script.textContent = `
-                (function() {
-                    let val = null;
-                    try {
-                        if (window['${varName}']) {
-                            val = window['${varName}'];
-                        } else if (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.videoData && '${varName}' === 'title') {
-                             val = window.__INITIAL_STATE__.videoData.title;
-                        }
-                    } catch(e) {}
-                    document.dispatchEvent(new CustomEvent('${eventName}', { detail: val }));
-                })();
-            `;
+    // Helper: 从 <script> 标签文本中解析 B 站 __INITIAL_STATE__（CSP 安全，无需执行脚本）
+    function parseBiliInitialState() {
+        const scripts = document.querySelectorAll('script:not([src])');
+        for (const s of scripts) {
+            const text = s.textContent;
+            const marker = 'window.__INITIAL_STATE__=';
+            const idx = text.indexOf(marker);
+            if (idx === -1) continue;
 
-            const handler = (e) => {
-                document.removeEventListener(eventName, handler);
-                script.remove();
-                resolve(e.detail);
-            };
-
-            document.addEventListener(eventName, handler);
-            (document.head || document.documentElement).appendChild(script);
-
-            // 超时保护
-            setTimeout(() => {
-                document.removeEventListener(eventName, handler);
-                if (script.parentNode) script.remove();
-                resolve(null);
-            }, 500);
-        });
-    }
-
-    // Helper: 等待 B 站视频页面变量就绪且与 URL 匹配
-    async function waitForBiliPageReady() {
-        const MAX_WAIT = 5000;
-        const POLL = 200;
-        let waited = 0;
-
-        const bvidInUrl = location.pathname.match(/\/video\/(BV[\w]+)/i)?.[1];
-        if (!bvidInUrl) return;
-
-        console.log('[Subtitle-to-Gemini] 等待页面变量更新至:', bvidInUrl);
-
-        while (waited < MAX_WAIT) {
-            const pageBvid = await getVariableInMainWorld('bvid');
-            const pageCid = await getVariableInMainWorld('cid');
-
-            // 如果页面变量已经更新为当前 URL 的视频，说明 SPA 导航已完成
-            if (pageBvid === bvidInUrl && pageCid) {
-                if (waited > 0) console.log(`[Subtitle-to-Gemini] 变量就绪，等待了 ${waited}ms`);
-                return { bvid: pageBvid, cid: pageCid };
+            // 用括号计数器找到完整的 JSON 对象边界
+            const jsonStart = idx + marker.length;
+            let depth = 0;
+            let jsonEnd = jsonStart;
+            for (let i = jsonStart; i < text.length; i++) {
+                if (text[i] === '{') depth++;
+                else if (text[i] === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        jsonEnd = i + 1;
+                        break;
+                    }
+                }
             }
 
-            await new Promise(r => setTimeout(r, POLL));
-            waited += POLL;
+            try {
+                return JSON.parse(text.slice(jsonStart, jsonEnd));
+            } catch (_) {
+                console.warn('[Subtitle-to-Gemini] __INITIAL_STATE__ JSON 解析失败');
+            }
         }
-
-        console.warn('[Subtitle-to-Gemini] 等待页面变量超时，降级为 URL 模式');
-        return { bvid: bvidInUrl, cid: null };
+        return null;
     }
 
     // ========== Bilibili Subtitle Extraction ==========
     async function getBilibiliSubtitle() {
-        // 直接从页面主世界“掏”变量，这是最快且最不容易被插件拦截的方式
-        const pageInfo = await waitForBiliPageReady();
-        const bvid = pageInfo.bvid;
-        let cid = pageInfo.cid;
+        // 从 URL 提取 BV 号（永远准确）
+        const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
+        if (!bvidMatch) {
+            throw new Error('无法从当前页面 URL 提取 BV 号');
+        }
+        const bvid = bvidMatch[1];
+        console.log('[Subtitle-to-Gemini] URL BV号:', bvid);
+
+        let cid = null;
         let title = '视频';
 
-        if (!bvid) {
-            throw new Error('无法从当前页面提取 BV 号');
+        // --- 方法 1: 从 DOM 中解析 __INITIAL_STATE__（无网络请求，CSP 安全）---
+        const initState = parseBiliInitialState();
+        if (initState && initState.bvid === bvid && initState.videoData) {
+            title = initState.videoData.title || title;
+            cid = initState.videoData.cid;
+            // 处理分P
+            const pages = initState.videoData.pages;
+            if (pages && pages.length > 0) {
+                const p = initState.p || parseInt(new URLSearchParams(location.search).get('p')) || 1;
+                const pageInfo = pages.find(page => page.page === p);
+                if (pageInfo) cid = pageInfo.cid;
+            }
+            console.log(`[Subtitle-to-Gemini] 从 DOM 解析成功: 「${title}」(cid: ${cid})`);
         }
 
-        // 如果直接拿到了 cid，尝试拿标题
-        if (cid) {
-            const pageTitle = await getVariableInMainWorld('title');
-            if (pageTitle) title = pageTitle;
-            console.log(`[Subtitle-to-Gemini] 成功从页面直接获取: ${title} (${bvid}, ${cid})`);
-        } else {
-            // Fallback: 如果拿不到页面变量（比如某些老版本页面），才走 API
-            console.log('[Subtitle-to-Gemini] 无法直接读取变量，回退到 API 请求');
+        // --- 方法 2: API Fallback（SPA 导航时 __INITIAL_STATE__ 可能过期）---
+        if (!cid) {
+            console.log('[Subtitle-to-Gemini] DOM 解析未命中（可能是 SPA 导航），等待后走 API...');
+            // 等待 BiliPlus 等插件初始化完成
+            await new Promise(r => setTimeout(r, 800));
+
             const infoJson = await safeFetchJSON(
                 `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
                 { credentials: 'include' }
@@ -339,9 +316,17 @@
             }
             cid = infoJson.data.cid;
             title = infoJson.data.title;
+            // 处理分P
+            const pages = infoJson.data.pages;
+            if (pages && pages.length > 0) {
+                const p = parseInt(new URLSearchParams(location.search).get('p')) || 1;
+                const pageInfo = pages.find(page => page.page === p);
+                if (pageInfo) cid = pageInfo.cid;
+            }
+            console.log(`[Subtitle-to-Gemini] API 获取成功: 「${title}」(cid: ${cid})`);
         }
 
-        // 此时我们有了确定的 bvid 和 cid，剩下的就是拿字幕列表
+        // --- 获取字幕列表 ---
         const playerJson = await safeFetchJSON(
             `https://api.bilibili.com/x/player/v2?bvid=${bvid}&cid=${cid}`,
             { credentials: 'include' }
@@ -354,10 +339,10 @@
             throw new Error('该视频没有可用字幕（可能需要登录B站账号）');
         }
 
-        // Step 3: 下载字幕
+        // 下载字幕
         const sub = pickSubtitle(subtitles);
         const result = await downloadBiliSubtitle(sub);
-        result.title = title; // 附带标题供验证
+        result.title = title;
         return result;
     }
 
