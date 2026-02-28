@@ -249,7 +249,6 @@
             const idx = text.indexOf(marker);
             if (idx === -1) continue;
 
-            // 用括号计数器找到完整的 JSON 对象边界
             const jsonStart = idx + marker.length;
             let depth = 0;
             let jsonEnd = jsonStart;
@@ -273,9 +272,33 @@
         return null;
     }
 
+    // Helper: 通过 CustomEvent 向主世界 (bili-inject.js) 发送请求
+    function requestFromMainWorld(eventName, responseEventName, detail, timeoutMs = 10000) {
+        return new Promise((resolve, reject) => {
+            const requestId = Math.random().toString(36).slice(2);
+            const handler = (e) => {
+                if (e.detail.requestId !== requestId) return;
+                document.removeEventListener(responseEventName, handler);
+                clearTimeout(timer);
+                if (e.detail.success) {
+                    resolve(e.detail.data);
+                } else {
+                    reject(new Error(e.detail.error || '主世界请求失败'));
+                }
+            };
+            document.addEventListener(responseEventName, handler);
+            document.dispatchEvent(new CustomEvent(eventName, {
+                detail: { ...detail, requestId }
+            }));
+            const timer = setTimeout(() => {
+                document.removeEventListener(responseEventName, handler);
+                reject(new Error('主世界请求超时'));
+            }, timeoutMs);
+        });
+    }
+
     // ========== Bilibili Subtitle Extraction ==========
     async function getBilibiliSubtitle() {
-        // 从 URL 提取 BV 号（永远准确）
         const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
         if (!bvidMatch) {
             throw new Error('无法从当前页面 URL 提取 BV 号');
@@ -286,60 +309,74 @@
         let cid = null;
         let title = '视频';
 
-        // --- 方法 1: 从 DOM 中解析 __INITIAL_STATE__（无网络请求，CSP 安全）---
+        // --- 方法 1: 从 DOM 解析 __INITIAL_STATE__（零网络请求，CSP 安全）---
         const initState = parseBiliInitialState();
         if (initState && initState.bvid === bvid && initState.videoData) {
             title = initState.videoData.title || title;
             cid = initState.videoData.cid;
-            // 处理分P
             const pages = initState.videoData.pages;
             if (pages && pages.length > 0) {
                 const p = initState.p || parseInt(new URLSearchParams(location.search).get('p')) || 1;
                 const pageInfo = pages.find(page => page.page === p);
                 if (pageInfo) cid = pageInfo.cid;
             }
-            console.log(`[Subtitle-to-Gemini] 从 DOM 解析成功: 「${title}」(cid: ${cid})`);
+            console.log(`[Subtitle-to-Gemini] DOM 解析成功: 「${title}」(cid: ${cid})`);
         }
 
-        // --- 方法 2: API Fallback（SPA 导航时 __INITIAL_STATE__ 可能过期）---
+        // --- 方法 2: 通过 MAIN world 脚本请求 API（SPA 导航时 DOM 数据过期）---
         if (!cid) {
-            console.log('[Subtitle-to-Gemini] DOM 解析未命中（可能是 SPA 导航），等待后走 API...');
-            // 等待 BiliPlus 等插件初始化完成
-            await new Promise(r => setTimeout(r, 800));
+            console.log('[Subtitle-to-Gemini] DOM 未命中，通过主世界请求 API...');
+            try {
+                const info = await requestFromMainWorld(
+                    'stg-request-video-info', 'stg-video-info-result',
+                    { bvid }
+                );
+                cid = info.cid;
+                title = info.title;
+                const pages = info.pages;
+                if (pages && pages.length > 0) {
+                    const p = parseInt(new URLSearchParams(location.search).get('p')) || 1;
+                    const pageInfo = pages.find(page => page.page === p);
+                    if (pageInfo) cid = pageInfo.cid;
+                }
+                console.log(`[Subtitle-to-Gemini] 主世界 API 成功: 「${title}」(cid: ${cid})`);
+            } catch (err) {
+                // Fallback: 如果主世界不可用（如 Firefox 不支持 world: MAIN），直接 fetch
+                console.warn('[Subtitle-to-Gemini] 主世界请求失败，降级为直接 fetch:', err.message);
+                const infoJson = await safeFetchJSON(
+                    `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+                    { credentials: 'include' }
+                );
+                if (infoJson.code !== 0) {
+                    throw new Error(`获取视频信息失败: ${infoJson.message}`);
+                }
+                cid = infoJson.data.cid;
+                title = infoJson.data.title;
+            }
+        }
 
-            const infoJson = await safeFetchJSON(
-                `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+        // --- 获取字幕列表（优先主世界）---
+        let subtitles;
+        try {
+            subtitles = await requestFromMainWorld(
+                'stg-request-subtitle-list', 'stg-subtitle-list-result',
+                { bvid, cid }
+            );
+        } catch (err) {
+            console.warn('[Subtitle-to-Gemini] 主世界字幕列表请求失败，降级:', err.message);
+            const playerJson = await safeFetchJSON(
+                `https://api.bilibili.com/x/player/v2?bvid=${bvid}&cid=${cid}`,
                 { credentials: 'include' }
             );
-            if (infoJson.code !== 0) {
-                throw new Error(`获取视频信息失败: ${infoJson.message}`);
-            }
-            cid = infoJson.data.cid;
-            title = infoJson.data.title;
-            // 处理分P
-            const pages = infoJson.data.pages;
-            if (pages && pages.length > 0) {
-                const p = parseInt(new URLSearchParams(location.search).get('p')) || 1;
-                const pageInfo = pages.find(page => page.page === p);
-                if (pageInfo) cid = pageInfo.cid;
-            }
-            console.log(`[Subtitle-to-Gemini] API 获取成功: 「${title}」(cid: ${cid})`);
+            subtitles = playerJson?.data?.subtitle?.subtitles || [];
         }
 
-        // --- 获取字幕列表 ---
-        const playerJson = await safeFetchJSON(
-            `https://api.bilibili.com/x/player/v2?bvid=${bvid}&cid=${cid}`,
-            { credentials: 'include' }
-        );
-
-        const subtitles = playerJson?.data?.subtitle?.subtitles || [];
         console.log('[Subtitle-to-Gemini] 可用字幕:', subtitles.map(s => s.lan_doc || s.lan));
 
-        if (subtitles.length === 0) {
+        if (!subtitles || subtitles.length === 0) {
             throw new Error('该视频没有可用字幕（可能需要登录B站账号）');
         }
 
-        // 下载字幕
         const sub = pickSubtitle(subtitles);
         const result = await downloadBiliSubtitle(sub);
         result.title = title;

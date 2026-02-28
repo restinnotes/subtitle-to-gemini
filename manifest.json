@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Subtitle to Gemini",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "一键复制 YouTube / Bilibili 视频字幕并跳转 Gemini",
   "permissions": [
     "activeTab",
@@ -23,6 +23,17 @@
         "style.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.bilibili.com/video/*",
+        "https://bilibili.com/video/*"
+      ],
+      "js": [
+        "bili-inject.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "browser_specific_settings": {
