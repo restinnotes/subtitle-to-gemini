@@ -20,6 +20,21 @@
 
     if (!PLATFORM) return;
 
+    // ========== Inject MAIN World Script (Firefox/Cross-browser Compatible) ==========
+    if (PLATFORM === 'bilibili') {
+        try {
+            const script = document.createElement('script');
+            script.src = chrome.runtime.getURL('bili-inject.js');
+            script.onload = function () {
+                this.remove();
+            };
+            (document.head || document.documentElement).appendChild(script);
+            console.log('[Subtitle-to-Gemini] 已通过 script 标签注入 bili-inject.js 到主世界');
+        } catch (e) {
+            console.error('[Subtitle-to-Gemini] 注入主世界脚本失败:', e);
+        }
+    }
+
     // ========== UI: Create FAB ==========
     const container = document.createElement('div');
     container.id = 'stg-fab-container';
