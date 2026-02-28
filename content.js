@@ -292,18 +292,22 @@
         return new Promise((resolve, reject) => {
             const requestId = Math.random().toString(36).slice(2);
             const handler = (e) => {
-                if (e.detail.requestId !== requestId) return;
+                // 适配 Firefox：提取并解析 JSON 字符串
+                const respDetail = typeof e.detail === 'string' ? JSON.parse(e.detail) : (e.detail || {});
+                if (respDetail.requestId !== requestId) return;
+
                 document.removeEventListener(responseEventName, handler);
                 clearTimeout(timer);
-                if (e.detail.success) {
-                    resolve(e.detail.data);
+                if (respDetail.success) {
+                    resolve(respDetail.data);
                 } else {
-                    reject(new Error(e.detail.error || '主世界请求失败'));
+                    reject(new Error(respDetail.error || '主世界请求失败'));
                 }
             };
             document.addEventListener(responseEventName, handler);
+            // 适配 Firefox：发送端也将对象转为字符串
             document.dispatchEvent(new CustomEvent(eventName, {
-                detail: { ...detail, requestId }
+                detail: JSON.stringify({ ...detail, requestId })
             }));
             const timer = setTimeout(() => {
                 document.removeEventListener(responseEventName, handler);

@@ -39,20 +39,24 @@
 
             console.log(TAG, '视频信息获取成功:', result.title);
 
+            // Firefox Xray Vision 需要基本数据类型或 cloneInto，这里使用 JSON 字符串最稳妥
             document.dispatchEvent(new CustomEvent('stg-video-info-result', {
-                detail: { requestId, success: true, data: result }
+                detail: JSON.stringify({ requestId, success: true, data: result })
             }));
         } catch (err) {
             console.error(TAG, '获取视频信息失败:', err);
             document.dispatchEvent(new CustomEvent('stg-video-info-result', {
-                detail: { requestId, success: false, error: err.message }
+                detail: JSON.stringify({ requestId, success: false, error: err.message })
             }));
         }
     });
 
     // 监听 content script 的字幕列表请求
     document.addEventListener('stg-request-subtitle-list', async (e) => {
-        const { requestId, bvid, cid } = e.detail;
+        // content script 发过来的 detail 也是字符串（适配 Firefox）
+        const detailStr = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail || {});
+        const reqDetail = JSON.parse(detailStr);
+        const { requestId, bvid, cid } = reqDetail;
         console.log(TAG, '请求字幕列表:', bvid, cid);
 
         try {
@@ -66,12 +70,12 @@
             console.log(TAG, '字幕列表:', subtitles.map(s => s.lan_doc || s.lan));
 
             document.dispatchEvent(new CustomEvent('stg-subtitle-list-result', {
-                detail: { requestId, success: true, data: subtitles }
+                detail: JSON.stringify({ requestId, success: true, data: subtitles })
             }));
         } catch (err) {
             console.error(TAG, '获取字幕列表失败:', err);
             document.dispatchEvent(new CustomEvent('stg-subtitle-list-result', {
-                detail: { requestId, success: false, error: err.message }
+                detail: JSON.stringify({ requestId, success: false, error: err.message })
             }));
         }
     });
