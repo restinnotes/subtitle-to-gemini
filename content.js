@@ -20,20 +20,6 @@
 
     if (!PLATFORM) return;
 
-    // ========== Inject MAIN World Script (Firefox/Cross-browser Compatible) ==========
-    if (PLATFORM === 'bilibili') {
-        try {
-            const script = document.createElement('script');
-            script.src = chrome.runtime.getURL('bili-inject.js');
-            script.onload = function () {
-                this.remove();
-            };
-            (document.head || document.documentElement).appendChild(script);
-            console.log('[Subtitle-to-Gemini] 已通过 script 标签注入 bili-inject.js 到主世界');
-        } catch (e) {
-            console.error('[Subtitle-to-Gemini] 注入主世界脚本失败:', e);
-        }
-    }
 
     // ========== UI: Create FAB ==========
     const container = document.createElement('div');
@@ -217,7 +203,7 @@
         try {
             return JSON.parse(text);
         } catch (e) {
-            // 如果返回了HTML（如B站页面），可能是页面还没加载完或插件拦截出错
+            // 如果返回了 HTML（如 B 站页面），可能是页面还没加载完或插件拦截出错
             if (text.includes('<!DOCTYPE') || text.includes('<html')) {
                 console.warn('[Subtitle-to-Gemini] API 返回了 HTML 而非 JSON，可能页面未就绪', url);
                 if (retryCount < 2) {
@@ -287,35 +273,6 @@
         return null;
     }
 
-    // Helper: 通过 CustomEvent 向主世界 (bili-inject.js) 发送请求
-    function requestFromMainWorld(eventName, responseEventName, detail, timeoutMs = 10000) {
-        return new Promise((resolve, reject) => {
-            const requestId = Math.random().toString(36).slice(2);
-            const handler = (e) => {
-                // 适配 Firefox：提取并解析 JSON 字符串
-                const respDetail = typeof e.detail === 'string' ? JSON.parse(e.detail) : (e.detail || {});
-                if (respDetail.requestId !== requestId) return;
-
-                document.removeEventListener(responseEventName, handler);
-                clearTimeout(timer);
-                if (respDetail.success) {
-                    resolve(respDetail.data);
-                } else {
-                    reject(new Error(respDetail.error || '主世界请求失败'));
-                }
-            };
-            document.addEventListener(responseEventName, handler);
-            // 适配 Firefox：发送端也将对象转为字符串
-            document.dispatchEvent(new CustomEvent(eventName, {
-                detail: JSON.stringify({ ...detail, requestId })
-            }));
-            const timer = setTimeout(() => {
-                document.removeEventListener(responseEventName, handler);
-                reject(new Error('主世界请求超时'));
-            }, timeoutMs);
-        });
-    }
-
     // ========== Bilibili Subtitle Extraction ==========
     async function getBilibiliSubtitle() {
         const bvidMatch = location.pathname.match(/\/video\/(BV[\w]+)/i);
@@ -328,7 +285,7 @@
         let cid = null;
         let title = '视频';
 
-        // --- 方法 1: 从 DOM 解析 __INITIAL_STATE__（零网络请求，CSP 安全）---
+        // --- 方法 1: 从 DOM 解析 __INITIAL_STATE__（零网络请求）---
         const initState = parseBiliInitialState();
         if (initState && initState.bvid === bvid && initState.videoData) {
             title = initState.videoData.title || title;
@@ -342,53 +299,33 @@
             console.log(`[Subtitle-to-Gemini] DOM 解析成功: 「${title}」(cid: ${cid})`);
         }
 
-        // --- 方法 2: 通过 MAIN world 脚本请求 API（SPA 导航时 DOM 数据过期）---
+        // --- 方法 2: 直接请求 API (无时间戳防 BiliPlus 拦截) ---
         if (!cid) {
-            console.log('[Subtitle-to-Gemini] DOM 未命中，通过主世界请求 API...');
-            try {
-                const info = await requestFromMainWorld(
-                    'stg-request-video-info', 'stg-video-info-result',
-                    { bvid }
-                );
-                cid = info.cid;
-                title = info.title;
-                const pages = info.pages;
-                if (pages && pages.length > 0) {
-                    const p = parseInt(new URLSearchParams(location.search).get('p')) || 1;
-                    const pageInfo = pages.find(page => page.page === p);
-                    if (pageInfo) cid = pageInfo.cid;
-                }
-                console.log(`[Subtitle-to-Gemini] 主世界 API 成功: 「${title}」(cid: ${cid})`);
-            } catch (err) {
-                // Fallback: 如果主世界不可用（如 Firefox 不支持 world: MAIN），直接 fetch
-                console.warn('[Subtitle-to-Gemini] 主世界请求失败，降级为直接 fetch:', err.message);
-                const infoJson = await safeFetchJSON(
-                    `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
-                    { credentials: 'include' }
-                );
-                if (infoJson.code !== 0) {
-                    throw new Error(`获取视频信息失败: ${infoJson.message}`);
-                }
-                cid = infoJson.data.cid;
-                title = infoJson.data.title;
+            console.log('[Subtitle-to-Gemini] DOM 未命中，开始 fetch API...');
+            const infoJson = await safeFetchJSON(
+                `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
+                { credentials: 'include', cache: 'no-store' }
+            );
+            if (infoJson.code !== 0) {
+                throw new Error(`获取视频信息失败: ${infoJson.message}`);
             }
+            cid = infoJson.data.cid;
+            title = infoJson.data.title;
+            const pages = infoJson.data.pages;
+            if (pages && pages.length > 0) {
+                const p = parseInt(new URLSearchParams(location.search).get('p')) || 1;
+                const pageInfo = pages.find(page => page.page === p);
+                if (pageInfo) cid = pageInfo.cid;
+            }
+            console.log(`[Subtitle-to-Gemini] API 请求成功: 「${title}」(cid: ${cid})`);
         }
 
-        // --- 获取字幕列表（优先主世界）---
-        let subtitles;
-        try {
-            subtitles = await requestFromMainWorld(
-                'stg-request-subtitle-list', 'stg-subtitle-list-result',
-                { bvid, cid }
-            );
-        } catch (err) {
-            console.warn('[Subtitle-to-Gemini] 主世界字幕列表请求失败，降级:', err.message);
-            const playerJson = await safeFetchJSON(
-                `https://api.bilibili.com/x/player/v2?bvid=${bvid}&cid=${cid}`,
-                { credentials: 'include' }
-            );
-            subtitles = playerJson?.data?.subtitle?.subtitles || [];
-        }
+        // --- 获取字幕列表 ---
+        const playerJson = await safeFetchJSON(
+            `https://api.bilibili.com/x/player/v2?bvid=${bvid}&cid=${cid}`,
+            { credentials: 'include', cache: 'no-store' }
+        );
+        const subtitles = playerJson?.data?.subtitle?.subtitles || [];
 
         console.log('[Subtitle-to-Gemini] 可用字幕:', subtitles.map(s => s.lan_doc || s.lan));
 
